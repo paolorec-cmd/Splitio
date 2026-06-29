@@ -195,6 +195,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;backg
           <div class="hero-sub-item"><div class="lbl">Questo mese</div><div class="val" id="hero-month">€0</div></div>
         </div>
       </div>
+      <div class="section" id="summary-section" style="display:none">
+        <div class="section-title">💰 Chi deve cosa a chi</div>
+        <div id="summary-list"></div>
+      </div>
       <div class="section">
         <div class="section-title">Ultime spese</div>
         <div class="card-list" id="recent-list"></div>
@@ -207,8 +211,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;backg
         <div id="people-list"></div>
       </div>
       <div class="section" id="settle-section" style="display:none">
-        <div class="section-title">Da saldare</div>
+        <div class="section-title">I miei saldi</div>
         <div id="settle-list"></div>
+      </div>
+      <div class="section" id="group-debts-section" style="display:none">
+        <div class="section-title">Saldi tra gli altri</div>
+        <div id="group-debts-list"></div>
       </div>
     </div>
 
@@ -292,7 +300,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;backg
     <div class="form-label">Codice da condividere</div>
     <div class="group-code-box" id="grp-code-display"></div>
     <div class="info-box">Invia questo codice agli amici. Chi lo incolla in "Entra" accede <strong>solo a questo gruppo</strong> — ogni viaggio è separato.</div>
-    <button class="btn-secondary" onclick="copyCode()">📋 Copia codice</button>
+    <button class="btn-secondary" onclick="copyCode()">📤 Condividi / Copia codice</button>
     <button class="btn-secondary" onclick="switchGroupFromModal()">🔄 Cambia gruppo</button>
     <button class="btn-danger" onclick="leaveGroup()">Esci dal gruppo</button>
   </div>
@@ -332,6 +340,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;backg
 var MASTER = '$2a$10$WyqOXKdiL0cbj0yvHi02FuMQduAyQLdMb7qd0G//w4ub3egbBEAAu';
 var ACCESS = '$2a$10$f7dRzGIgaElI0A20X.4Is.Ce7t9vnhbUmsqRXw6Njsxk41JYUc2Hm';
 var API    = 'https://api.jsonbin.io/v3/b';
+var USERS_BIN = '6a4227eef5f4af5e29404697'; // bin globale utenti - creato alla prima run
 
 var CATS = [
   {id:'food',label:'🍽️ Cibo'},{id:'transport',label:'🚗 Trasporti'},
@@ -348,8 +357,24 @@ var binId=null, myId=null, myName=null, grpName=null;
 var pollTimer=null, lastVer=null;
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
-function lsGet(k,d){try{var v=localStorage.getItem(k);return v!=null?JSON.parse(v):d;}catch(e){return d;}}
-function lsSet(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+function lsGet(k,d){
+  try{
+    var v=localStorage.getItem(k);
+    if(v!=null)return JSON.parse(v);
+    // fallback: cookie
+    var name=k+'=';
+    var ca=document.cookie.split(';');
+    for(var i=0;i<ca.length;i++){var c=ca[i].trim();if(c.indexOf(name)===0){try{return JSON.parse(decodeURIComponent(c.substring(name.length)));}catch(e){}}}
+    return d;
+  }catch(e){return d;}
+}
+function lsSet(k,v){
+  try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}
+  try{
+    var val=encodeURIComponent(JSON.stringify(v));
+    document.cookie=k+'='+val+';path=/;max-age=31536000;SameSite=Lax';
+  }catch(e){}
+}
 
 // Salva lista gruppi locali
 function getMyGroups(){return lsGet('spl_groups',[]);}
@@ -461,6 +486,7 @@ function createGroup(){
     binId=res.metadata.id;
     addToMyGroups({binId:binId,myId:myId,myName:myName,grpName:grpName});
     expenses=[]; people=[{id:myId,name:myName}];
+    registerUser(myName, binId, myId, grpName);
     bootApp();
   })
   .catch(function(e){setSyncDot('err');toast('Errore: '+e.message);});
@@ -493,6 +519,7 @@ function joinGroup(){
     expenses=d.expenses||[]; people=d.people||[]; grpName=d.grpName||'Gruppo';
     binId=targetBin;
     addToMyGroups({binId:binId,myId:myId,myName:myName,grpName:grpName});
+    registerUser(myName, binId, myId, grpName);
     ensureMe(); bootApp();
   })
   .catch(function(e){setSyncDot('err');toast('Codice non valido — riprova');});
@@ -516,6 +543,9 @@ function openGroup(bid,mid,mname,gname){
 
 // ─── BOOT ────────────────────────────────────────────────────────────────────
 function bootApp(){
+  // Scrivi stato nell'URL hash — persiste anche come PWA
+  var hash='bin='+encodeURIComponent(binId)+'&me='+encodeURIComponent(myId)+'&name='+encodeURIComponent(myName)+'&grp='+encodeURIComponent(grpName||'');
+  try{ window.location.hash = hash; }catch(e){}
   document.getElementById('setup-screen').classList.add('hidden');
   document.getElementById('main-app').style.display='flex';
   document.getElementById('fab-btn').style.display='flex';
@@ -534,20 +564,33 @@ function openGroupInfo(){
 }
 
 function copyCode(){
-  var code=JSON.stringify({binId:binId,grpName:grpName});
-  if(navigator.clipboard){
-    navigator.clipboard.writeText(code).then(function(){toast('Codice copiato! Mandalo via WhatsApp 📤');});
+  // URL magico che apre direttamente l'app nel gruppo — nessun codice da copiare!
+  // L'amico tocca il link e si trova già dentro (deve solo mettere il suo nome)
+  var joinCode=JSON.stringify({binId:binId,grpName:grpName});
+  var appUrl='https://paolorec-cmd.github.io/Splitio';
+  var msg='🧾 Unisciti a Splitio - gruppo "'+grpName+'"\n\n'
+    +'1. Apri questo link: '+appUrl+'\n'
+    +'2. Tocca "Entra con codice"\n'
+    +'3. Inserisci il tuo nome\n'
+    +'4. Incolla questo codice:\n\n'+joinCode;
+  if(navigator.share){
+    navigator.share({title:'Splitio - '+grpName, text:msg, url:appUrl})
+      .then(function(){toast('Condiviso! ✓');})
+      .catch(function(){});
+  } else if(navigator.clipboard){
+    navigator.clipboard.writeText(msg).then(function(){toast('Copiato! Incolla su WhatsApp 📤');});
   } else {
     var el=document.createElement('textarea');
-    el.value=code; document.body.appendChild(el); el.select();
+    el.value=msg; document.body.appendChild(el); el.select();
     document.execCommand('copy'); document.body.removeChild(el);
-    toast('Codice copiato!');
+    toast('Copiato!');
   }
 }
 
 function switchGroupFromModal(){
   document.getElementById('overlay-group').classList.remove('open');
   if(pollTimer)clearInterval(pollTimer);
+  try{ window.location.hash=''; }catch(e){}
   document.getElementById('setup-screen').classList.remove('hidden');
   document.getElementById('main-app').style.display='none';
   document.getElementById('fab-btn').style.display='none';
@@ -594,6 +637,38 @@ function computeBalances(){
   return bal;
 }
 
+function computeAllBalances(){
+  // Matrice debiti tra tutte le coppie
+  var matrix={};
+  people.forEach(function(a){
+    matrix[a.id]={};
+    people.forEach(function(b){ if(a.id!==b.id) matrix[a.id][b.id]=0; });
+  });
+  expenses.filter(function(e){return e.type==='shared';}).forEach(function(e){
+    var parts=e.participants||[]; if(!parts.length||!e.payer)return;
+    var share=e.amount/parts.length;
+    parts.forEach(function(pid){
+      if(pid===e.payer)return;
+      if(matrix[pid]&&matrix[pid][e.payer]!==undefined) matrix[pid][e.payer]+=share;
+    });
+  });
+  // Semplifica coppie
+  var debts=[], seen={};
+  people.forEach(function(a){
+    people.forEach(function(b){
+      if(a.id===b.id)return;
+      var key=[a.id,b.id].sort().join('|');
+      if(seen[key])return; seen[key]=1;
+      var ab=(matrix[a.id]&&matrix[a.id][b.id])||0;
+      var ba=(matrix[b.id]&&matrix[b.id][a.id])||0;
+      var net=ab-ba;
+      if(net>0.005) debts.push({from:a.id,to:b.id,amt:net});
+      else if(net<-0.005) debts.push({from:b.id,to:a.id,amt:-net});
+    });
+  });
+  return debts;
+}
+
 function renderHome(){
   var now=new Date(), bal=computeBalances(), owed=0, owe=0, month=0;
   Object.values(bal).forEach(function(b){if(b>0.005)owed+=b;else if(b<-0.005)owe+=Math.abs(b);});
@@ -605,6 +680,28 @@ function renderHome(){
   document.getElementById('hero-owed').textContent=fmt(owed);
   document.getElementById('hero-owe').textContent=fmt(owe);
   document.getElementById('hero-month').textContent=fmt(month);
+
+  // Riepilogo globale debiti tra tutti
+  var allD = computeAllBalances();
+  var sumSection = document.getElementById('summary-section');
+  var sumList = document.getElementById('summary-list');
+  if(allD.length){
+    sumSection.style.display='block';
+    sumList.innerHTML = allD.map(function(d){
+      var isMe = d.from===myId || d.to===myId;
+      var fromN = personName(d.from);
+      var toN = personName(d.to);
+      var color = isMe ? (d.from===myId ? 'var(--red)' : 'var(--green)') : 'var(--text2)';
+      var icon = d.from===myId ? '🔴' : d.to===myId ? '🟢' : '⚪';
+      return '<div style="background:var(--surface);border-radius:10px;padding:14px 16px;margin-bottom:2px;display:flex;align-items:center;justify-content:space-between">'
+        +'<div style="font-size:14px">'+icon+' <strong>'+esc(fromN)+'</strong> deve a <strong>'+esc(toN)+'</strong></div>'
+        +'<div style="font-size:16px;font-weight:700;color:'+color+'">'+fmt(d.amt)+'</div>'
+        +'</div>';
+    }).join('');
+  } else {
+    sumSection.style.display = expenses.filter(function(e){return e.type==='shared';}).length ? 'block' : 'none';
+    if(sumSection.style.display==='block') sumList.innerHTML='<div style="background:var(--surface);border-radius:10px;padding:14px 16px;color:var(--green);text-align:center;font-size:14px">✅ Tutti in pari!</div>';
+  }
 
   var sorted=expenses.slice().sort(function(a,b){return new Date(b.date)-new Date(a.date);}).slice(0,30);
   var list=document.getElementById('recent-list');
@@ -776,7 +873,7 @@ function saveExpense(){
   var date=document.getElementById('inp-date').value;
   if(!amount||amount<=0){toast('Importo non valido');return;}
   if(!desc){toast('Inserisci una descrizione');return;}
-  if(selType==='shared'&&selPeople.length<2){toast('Seleziona almeno 2 persone');return;}
+  if(selType==='shared'&&selPeople.length<1){toast('Seleziona almeno 1 persona');return;}
   var exp={id:editId||uid(),amount:amount,description:desc,date:date||todayStr(),
     type:selType,category:selCat,
     participants:selType==='shared'?selPeople.slice():[],
