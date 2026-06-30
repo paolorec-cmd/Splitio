@@ -87,6 +87,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;backg
 .inline-add{display:flex;gap:8px;margin-top:10px}
 .inline-add .form-input{flex:1;font-size:14px;padding:10px 12px}
 .inline-add-btn{background:var(--accent);color:white;border:none;border-radius:10px;padding:0 18px;font-size:22px;cursor:pointer;flex-shrink:0}
+.receipt-preview{width:100%;border-radius:12px;margin-top:10px;display:none;position:relative}
+.receipt-preview img{width:100%;border-radius:12px;object-fit:cover;max-height:200px}
+.receipt-scan-btn{position:absolute;bottom:8px;right:8px;background:var(--accent);color:white;border:none;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.currency-row{display:flex;gap:8px;flex-wrap:wrap}
+.currency-chip{padding:8px 14px;border-radius:20px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);font-size:13px;cursor:pointer;transition:all 0.15s}
+.currency-chip.active{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.scan-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px}
+.scan-overlay.open{display:flex}
+.scan-spinner{width:48px;height:48px;border:3px solid rgba(124,110,247,0.3);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .fab{position:fixed;bottom:calc(80px + var(--safe-bottom) + 12px);right:20px;width:56px;height:56px;border-radius:18px;background:var(--accent);color:white;border:none;font-size:28px;cursor:pointer;box-shadow:0 8px 24px rgba(124,110,247,0.4);display:flex;align-items:center;justify-content:center;z-index:150;transition:transform 0.15s}
 .fab:active{transform:scale(0.94)}
 .detail-overlay{position:fixed;inset:0;background:var(--bg);z-index:400;display:none;flex-direction:column}
@@ -284,6 +294,28 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;backg
       <select class="form-input" id="inp-payer"></select>
     </div>
     <div class="form-group">
+      <label class="form-label">Valuta</label>
+      <div class="currency-row" id="currency-picker">
+        <div class="currency-chip active" data-cur="EUR" data-sym="€" onclick="selectCurrency(this)">🇪🇺 EUR €</div>
+        <div class="currency-chip" data-cur="GBP" data-sym="£" onclick="selectCurrency(this)">🇬🇧 GBP £</div>
+        <div class="currency-chip" data-cur="USD" data-sym="$" onclick="selectCurrency(this)">🇺🇸 USD $</div>
+        <div class="currency-chip" data-cur="CHF" data-sym="Fr" onclick="selectCurrency(this)">🇨🇭 CHF</div>
+        <div class="currency-chip" data-cur="JPY" data-sym="¥" onclick="selectCurrency(this)">🇯🇵 JPY ¥</div>
+        <div class="currency-chip" data-cur="NOK" data-sym="kr" onclick="selectCurrency(this)">🇳🇴 NOK</div>
+        <div class="currency-chip" data-cur="SEK" data-sym="kr" onclick="selectCurrency(this)">🇸🇪 SEK</div>
+        <div class="currency-chip" data-cur="DKK" data-sym="kr" onclick="selectCurrency(this)">🇩🇰 DKK</div>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">📸 Foto scontrino</label>
+      <input type="file" id="inp-receipt" accept="image/*" capture="environment" style="display:none" onchange="handleReceipt(this)">
+      <button class="btn-secondary" style="margin-top:0" onclick="document.getElementById('inp-receipt').click()">📷 Scatta / scegli foto</button>
+      <div class="receipt-preview" id="receipt-preview">
+        <img id="receipt-img" src="">
+        <button class="receipt-scan-btn" id="receipt-scan-btn" onclick="scanReceipt()">🔍 Leggi importo</button>
+      </div>
+    </div>
+    <div class="form-group">
       <label class="form-label">Data</label>
       <input type="date" class="form-input" id="inp-date">
     </div>
@@ -322,6 +354,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;backg
   </div>
 </div>
 
+<!-- SCAN OVERLAY -->
+<div class="scan-overlay" id="scan-overlay">
+  <div class="scan-spinner"></div>
+  <div style="color:white;font-size:16px;font-weight:600">Lettura scontrino in corso…</div>
+  <div style="color:rgba(255,255,255,0.5);font-size:13px">Sto analizzando l'immagine con AI</div>
+</div>
+
 <!-- CONFIRM -->
 <div class="overlay center" id="confirm-overlay" style="z-index:9500">
   <div style="background:var(--surface);border-radius:18px;padding:24px;width:100%;max-width:320px">
@@ -353,6 +392,7 @@ var CATS = [
 // ─── STATO ───────────────────────────────────────────────────────────────────
 var expenses=[], people=[];
 var editId=null, selPeople=[], selType='personal', selCat='other', curPersonId=null;
+var selCurrency='EUR', selCurrencySym='€', receiptBase64=null;
 var binId=null, myId=null, myName=null, grpName=null;
 var pollTimer=null, lastVer=null;
 
@@ -388,7 +428,7 @@ function addToMyGroups(entry){
 // ─── UTILS ───────────────────────────────────────────────────────────────────
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,6);}
 function todayStr(){return new Date().toISOString().split('T')[0];}
-function fmt(n){return '€'+Math.abs(n).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2});}
+function fmt(n,sym){return (sym||'€')+Math.abs(n).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function catLabel(id){var c=CATS.find(function(x){return x.id===id;});return c?c.label:'📦 Altro';}
 function catIcon(id){return catLabel(id).split(' ')[0];}
 function personName(id){
@@ -805,6 +845,11 @@ function openAddExpense(){
   document.getElementById('inp-date').value=todayStr();
   document.getElementById('btn-delete-expense').style.display='none';
   document.getElementById('inp-inline-person').value='';
+  document.getElementById('inp-receipt').value='';
+  document.getElementById('receipt-preview').style.display='none';
+  receiptBase64=null;
+  selCurrency='EUR'; selCurrencySym='€';
+  document.querySelectorAll('.currency-chip').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-cur')==='EUR');});
   applyType('personal');
   document.getElementById('cat-picker').querySelectorAll('.cat-chip').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-cat')==='other');});
   buildPeoplePicker();
@@ -876,6 +921,7 @@ function saveExpense(){
   if(selType==='shared'&&selPeople.length<1){toast('Seleziona almeno 1 persona');return;}
   var exp={id:editId||uid(),amount:amount,description:desc,date:date||todayStr(),
     type:selType,category:selCat,
+    currency:selCurrency, currencySym:selCurrencySym,
     participants:selType==='shared'?selPeople.slice():[],
     payer:selType==='shared'?(document.getElementById('inp-payer').value||myId):myId,
     addedBy:myId};
@@ -945,6 +991,66 @@ function settleUp(pid){
     expenses.unshift({id:uid(),amount:Math.abs(b),description:'💸 Saldo con '+(p?p.name:'?'),
       date:todayStr(),type:'shared',category:'other',participants:[myId,pid],payer:b>0?pid:myId,addedBy:myId});
     renderAll(); saveCloud(function(){toast('Saldo registrato ✓');});
+  });
+}
+
+// ─── VALUTA ──────────────────────────────────────────────────────────────────
+function selectCurrency(el){
+  selCurrency=el.getAttribute('data-cur');
+  selCurrencySym=el.getAttribute('data-sym');
+  document.querySelectorAll('.currency-chip').forEach(function(x){x.classList.remove('active');});
+  el.classList.add('active');
+}
+
+// ─── FOTO SCONTRINO ───────────────────────────────────────────────────────────
+function handleReceipt(input){
+  var file=input.files[0]; if(!file)return;
+  var reader=new FileReader();
+  reader.onload=function(e){
+    receiptBase64=e.target.result.split(',')[1];
+    document.getElementById('receipt-img').src=e.target.result;
+    document.getElementById('receipt-preview').style.display='block';
+  };
+  reader.readAsDataURL(file);
+}
+
+function scanReceipt(){
+  if(!receiptBase64){toast('Nessuna foto caricata');return;}
+  document.getElementById('scan-overlay').classList.add('open');
+  document.getElementById('receipt-scan-btn').disabled=true;
+
+  fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      model:'claude-sonnet-4-6',
+      max_tokens:256,
+      messages:[{
+        role:'user',
+        content:[
+          {type:'image',source:{type:'base64',media_type:'image/jpeg',data:receiptBase64}},
+          {type:'text',text:'Guarda questo scontrino e rispondimi SOLO con il totale finale da pagare, scritto come numero decimale (es: 23.50). Niente altro, solo il numero. Se non riesci a trovarlo scrivi solo: 0'}
+        ]
+      }]
+    })
+  })
+  .then(function(r){return r.json();})
+  .then(function(data){
+    document.getElementById('scan-overlay').classList.remove('open');
+    document.getElementById('receipt-scan-btn').disabled=false;
+    var text=data.content&&data.content[0]&&data.content[0].text||'0';
+    var amount=parseFloat(text.replace(',','.'));
+    if(amount>0){
+      document.getElementById('inp-amount').value=amount.toFixed(2);
+      toast('Importo rilevato: '+selCurrencySym+amount.toFixed(2)+' ✓');
+    } else {
+      toast('Non riesco a leggere il totale — inseriscilo manualmente');
+    }
+  })
+  .catch(function(){
+    document.getElementById('scan-overlay').classList.remove('open');
+    document.getElementById('receipt-scan-btn').disabled=false;
+    toast('Nessuna connessione — inserisci importo manualmente');
   });
 }
 
