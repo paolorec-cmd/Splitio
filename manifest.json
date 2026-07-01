@@ -1,0 +1,9 @@
+{
+  "name": "Splitio",
+  "short_name": "Splitio",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#6c63ff",
+  "icons": []
+}
