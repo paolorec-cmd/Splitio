@@ -133,12 +133,52 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;backg
 .group-code-box{background:var(--surface2);border-radius:12px;padding:16px;font-family:monospace;font-size:13px;word-break:break-all;color:var(--accent);text-align:center;margin:10px 0;line-height:1.6}
 .info-box{background:var(--surface2);border-radius:12px;padding:14px;font-size:13px;color:var(--text2);line-height:1.6;margin-bottom:12px}
 .info-box strong{color:var(--text)}
+/* LOCK SCREENS */
+.lock-icon{font-size:32px;margin-bottom:8px;text-align:center}
+.lock-title{font-size:18px;font-weight:700;text-align:center}
+.lock-sub{font-size:13px;color:var(--text2);margin-top:6px;text-align:center;margin-bottom:20px}
+.lock-error{color:var(--red);font-size:13px;text-align:center;margin-top:10px;display:none}
 </style>
 </head>
 <body>
 
+<!-- LOCK SETUP SCREEN (primo avvio: chiede se proteggere l'app) -->
+<div class="setup-screen hidden" id="lock-setup-screen">
+  <div class="setup-logo">Split<span>io</span></div>
+  <div class="setup-sub">Spese condivise in tempo reale</div>
+  <div class="setup-card">
+    <div class="lock-icon">🔒</div>
+    <div class="lock-title">Proteggi Splitio</div>
+    <div class="lock-sub">Imposta una password per questo dispositivo</div>
+    <div class="form-group">
+      <input type="password" class="form-input" id="inp-lock-pwd1" placeholder="Nuova password">
+    </div>
+    <div class="form-group">
+      <input type="password" class="form-input" id="inp-lock-pwd2" placeholder="Ripeti password">
+    </div>
+    <button class="btn-primary" onclick="saveLockPassword()">Salva password</button>
+    <button class="btn-secondary" onclick="skipLockSetup()">Salta (nessun blocco)</button>
+  </div>
+</div>
+
+<!-- UNLOCK SCREEN (aperture successive, se il blocco è attivo) -->
+<div class="setup-screen hidden" id="unlock-screen">
+  <div class="setup-logo">Split<span>io</span></div>
+  <div class="setup-sub">Spese condivise in tempo reale</div>
+  <div class="setup-card">
+    <div class="lock-icon">🔒</div>
+    <div class="lock-title">Sblocca Splitio</div>
+    <div class="lock-sub">Inserisci la password di questo dispositivo</div>
+    <div class="form-group">
+      <input type="password" class="form-input" id="inp-unlock-pwd" placeholder="Password">
+    </div>
+    <button class="btn-primary" onclick="tryUnlock()">Sblocca →</button>
+    <div class="lock-error" id="unlock-error">❌ Password errata</div>
+  </div>
+</div>
+
 <!-- SETUP SCREEN -->
-<div class="setup-screen" id="setup-screen">
+<div class="setup-screen hidden" id="setup-screen">
   <div class="setup-logo">Split<span>io</span></div>
   <div class="setup-sub">Spese condivise in tempo reale</div>
   <div class="setup-card">
@@ -342,6 +382,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;backg
     <div class="info-box">Invia questo codice agli amici. Chi lo incolla in "Entra" accede <strong>solo a questo gruppo</strong> — ogni viaggio è separato.</div>
     <button class="btn-secondary" onclick="copyCode()">📤 Condividi / Copia codice</button>
     <button class="btn-secondary" onclick="switchGroupFromModal()">🔄 Cambia gruppo</button>
+    <button class="btn-secondary" onclick="manageLock()" id="btn-manage-lock">🔒 Proteggi con password</button>
     <button class="btn-danger" onclick="leaveGroup()">Esci dal gruppo</button>
     <button class="btn-danger" style="margin-top:6px;background:rgba(248,113,113,0.25)" onclick="deleteGroup()">🗑️ Elimina gruppo definitivamente</button>
   </div>
@@ -441,13 +482,13 @@ var editId=null, selPeople=[], selType='personal', selCat='other', curPersonId=n
 var selCurrency='EUR', selCurrencySym='€', receiptBase64=null;
 var binId=null, myId=null, myName=null, grpName=null;
 var pollTimer=null, lastVer=null;
+var lockFromSettings=false;
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
 function lsGet(k,d){
   try{
     var v=localStorage.getItem(k);
     if(v!=null)return JSON.parse(v);
-    // fallback: cookie
     var name=k+'=';
     var ca=document.cookie.split(';');
     for(var i=0;i<ca.length;i++){var c=ca[i].trim();if(c.indexOf(name)===0){try{return JSON.parse(decodeURIComponent(c.substring(name.length)));}catch(e){}}}
@@ -462,7 +503,6 @@ function lsSet(k,v){
   }catch(e){}
 }
 
-// Salva lista gruppi locali
 function getMyGroups(){return lsGet('spl_groups',[]);}
 function saveMyGroups(g){lsSet('spl_groups',g);}
 function addToMyGroups(entry){
@@ -484,6 +524,71 @@ function personName(id){
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function toast(msg,dur){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},dur||2200);}
 function setSyncDot(s){var d=document.getElementById('sync-dot');if(d)d.className='sync-dot '+s;}
+
+// ─── BLOCCO CON PASSWORD (device lock) ────────────────────────────────────────
+function sha256Hex(str){
+  var enc=new TextEncoder().encode(str);
+  return crypto.subtle.digest('SHA-256',enc).then(function(buf){
+    return Array.prototype.map.call(new Uint8Array(buf),function(b){return b.toString(16).padStart(2,'0');}).join('');
+  });
+}
+
+function saveLockPassword(){
+  var p1=document.getElementById('inp-lock-pwd1').value;
+  var p2=document.getElementById('inp-lock-pwd2').value;
+  if(!p1||p1.length<4){toast('Password troppo corta (min 4 caratteri)');return;}
+  if(p1!==p2){toast('Le due password non coincidono');return;}
+  sha256Hex(p1).then(function(hash){
+    lsSet('spl_lock_hash',hash);
+    lsSet('spl_lock_setup_done',true);
+    document.getElementById('inp-lock-pwd1').value='';
+    document.getElementById('inp-lock-pwd2').value='';
+    document.getElementById('lock-setup-screen').classList.add('hidden');
+    toast('🔒 Blocco attivato');
+    if(!lockFromSettings) initAppFlow();
+    lockFromSettings=false;
+  });
+}
+
+function skipLockSetup(){
+  lsSet('spl_lock_setup_done',true);
+  document.getElementById('lock-setup-screen').classList.add('hidden');
+  if(!lockFromSettings) initAppFlow();
+  lockFromSettings=false;
+}
+
+function tryUnlock(){
+  var p=document.getElementById('inp-unlock-pwd').value;
+  var stored=lsGet('spl_lock_hash',null);
+  if(!p){return;}
+  sha256Hex(p).then(function(hash){
+    if(hash===stored){
+      document.getElementById('unlock-screen').classList.add('hidden');
+      document.getElementById('inp-unlock-pwd').value='';
+      document.getElementById('unlock-error').style.display='none';
+      initAppFlow();
+    } else {
+      document.getElementById('unlock-error').style.display='block';
+    }
+  });
+}
+
+function manageLock(){
+  var overlay=document.getElementById('overlay-group');
+  var has=lsGet('spl_lock_hash',null);
+  overlay.classList.remove('open');
+  if(has){
+    showConfirm('Rimuovere il blocco con password su questo dispositivo?',function(){
+      lsSet('spl_lock_hash',null);
+      toast('🔓 Blocco rimosso');
+    });
+  } else {
+    lockFromSettings=true;
+    document.getElementById('inp-lock-pwd1').value='';
+    document.getElementById('inp-lock-pwd2').value='';
+    document.getElementById('lock-setup-screen').classList.remove('hidden');
+  }
+}
 
 // ─── SETUP TABS ──────────────────────────────────────────────────────────────
 function showSetupTab(t){
@@ -587,7 +692,6 @@ function joinGroup(){
   if(!name){toast('Inserisci il tuo nome');return;}
   if(!code){toast('Inserisci il codice gruppo');return;}
 
-  // Il codice è un JSON con binId e può includere grpName
   var parsed=null;
   try{ parsed=JSON.parse(code); }catch(e){}
 
@@ -631,7 +735,6 @@ function openGroup(bid,mid,mname,gname){
 
 // ─── BOOT ────────────────────────────────────────────────────────────────────
 function bootApp(){
-  // Scrivi stato nell'URL hash — persiste anche come PWA
   var hash='bin='+encodeURIComponent(binId)+'&me='+encodeURIComponent(myId)+'&name='+encodeURIComponent(myName)+'&grp='+encodeURIComponent(grpName||'');
   try{ window.location.hash = hash; }catch(e){}
   document.getElementById('setup-screen').classList.add('hidden');
@@ -642,20 +745,21 @@ function bootApp(){
   if(hgn) hgn.textContent = grpName||'Gruppo';
   buildCatPicker();
   renderAll(); startPolling(); setSyncDot('ok');
+  var lockBtn=document.getElementById('btn-manage-lock');
+  if(lockBtn) lockBtn.textContent = lsGet('spl_lock_hash',null) ? '🔒 Rimuovi blocco password' : '🔒 Proteggi con password';
 }
 
 // ─── GROUP INFO ───────────────────────────────────────────────────────────────
 function openGroupInfo(){
   document.getElementById('grp-modal-title').textContent=grpName||'Gruppo';
-  // Codice = JSON compatto con binId
   var codeObj={binId:binId,grpName:grpName};
   document.getElementById('grp-code-display').textContent=JSON.stringify(codeObj);
+  var lockBtn=document.getElementById('btn-manage-lock');
+  if(lockBtn) lockBtn.textContent = lsGet('spl_lock_hash',null) ? '🔒 Rimuovi blocco password' : '🔒 Proteggi con password';
   document.getElementById('overlay-group').classList.add('open');
 }
 
 function copyCode(){
-  // URL magico che apre direttamente l'app nel gruppo — nessun codice da copiare!
-  // L'amico tocca il link e si trova già dentro (deve solo mettere il suo nome)
   var joinCode=JSON.stringify({binId:binId,grpName:grpName});
   var appUrl='https://paolorec-cmd.github.io/Splitio';
   var msg='🧾 Unisciti a Splitio - gruppo "'+grpName+'"\n\n'
@@ -689,12 +793,10 @@ function switchGroupFromModal(){
 
 function deleteGroup(){
   showConfirm('Eliminare il gruppo e TUTTE le spese definitivamente? Questa azione è irreversibile.', function(){
-    // Elimina il bin da JSONBin
     fetch(API+'/'+binId,{
       method:'DELETE',
       headers:{'X-Master-Key':MASTER,'X-Access-Key':ACCESS}
     }).then(function(){
-      // Rimuovi anche dal registro utenti
       if(USERS_DATA&&USERS_DATA.users){
         Object.keys(USERS_DATA.users).forEach(function(k){
           var u=USERS_DATA.users[k];
@@ -703,7 +805,6 @@ function deleteGroup(){
         saveUsersData();
       }
     }).catch(function(){});
-    // Pulizia locale
     var groups=getMyGroups().filter(function(g){return g.binId!==binId;});
     saveMyGroups(groups);
     lsSet('spl_binId',null);lsSet('spl_myId',null);
@@ -760,7 +861,6 @@ function computeBalances(){
 }
 
 function computeAllBalances(){
-  // Matrice debiti tra tutte le coppie
   var matrix={};
   people.forEach(function(a){
     matrix[a.id]={};
@@ -774,7 +874,6 @@ function computeAllBalances(){
       if(matrix[pid]&&matrix[pid][e.payer]!==undefined) matrix[pid][e.payer]+=share;
     });
   });
-  // Semplifica coppie
   var debts=[], seen={};
   people.forEach(function(a){
     people.forEach(function(b){
@@ -803,7 +902,6 @@ function renderHome(){
   document.getElementById('hero-owe').textContent=fmt(owe);
   document.getElementById('hero-month').textContent=fmt(month);
 
-  // Riepilogo globale debiti tra tutti
   var allD = computeAllBalances();
   var sumSection = document.getElementById('summary-section');
   var sumList = document.getElementById('summary-list');
@@ -1154,15 +1252,31 @@ document.getElementById('inp-desc').addEventListener('keydown',function(e){if(e.
 document.getElementById('inp-inline-person').addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();addPersonInline();}});
 document.getElementById('inp-myname-new').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('inp-grpname').focus();});
 document.getElementById('inp-grpname').addEventListener('keydown',function(e){if(e.key==='Enter')createGroup();});
+document.getElementById('inp-unlock-pwd').addEventListener('keydown',function(e){if(e.key==='Enter')tryUnlock();});
+document.getElementById('inp-lock-pwd1').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('inp-lock-pwd2').focus();});
+document.getElementById('inp-lock-pwd2').addEventListener('keydown',function(e){if(e.key==='Enter')saveLockPassword();});
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
-(function(){
+function initAppFlow(){
+  document.getElementById('setup-screen').classList.remove('hidden');
   renderMyGroups();
-  // Auto-apri se c'è un solo gruppo
   var groups=getMyGroups();
   if(groups.length===1){
     var g=groups[0];
     openGroup(g.binId,g.myId,g.myName,g.grpName);
+  }
+}
+
+(function(){
+  var lockHash=lsGet('spl_lock_hash',null);
+  var setupDone=lsGet('spl_lock_setup_done',false);
+  if(lockHash){
+    document.getElementById('unlock-screen').classList.remove('hidden');
+    setTimeout(function(){document.getElementById('inp-unlock-pwd').focus();},300);
+  } else if(!setupDone){
+    document.getElementById('lock-setup-screen').classList.remove('hidden');
+  } else {
+    initAppFlow();
   }
 })();
 </script>
